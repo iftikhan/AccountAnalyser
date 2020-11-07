@@ -1,0 +1,702 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: "AWS::Serverless-2016-10-31"
+
+Parameters:
+  MasterAccountId:
+    Type: String
+    Default: 632616529567
+    Description: "VMWare Master Account Id."
+
+  CaseCCEmailAddresses:
+    Type: String
+    Default: "iftik@amazon.com"
+    Description: "Support case email CC address"
+
+  StsExternalID:
+    Type: String
+    Default: 113c9213988c29a6b1baec02715978
+    Description: "VMWare STS External ID."
+
+  LogLevel:
+    Type: String
+    Default: INFO
+    Description: "Logging is set to INFO, Use DEBUG for more logging"
+
+  WaitTime:
+    Type: Number
+    Default: 21600
+    Description: "Waiting time(in seconds) between each phase of step function where human intervention is required"
+
+  AccountEmailCheck:
+    Type: String
+    Default: FALSE
+    Description: "If set to true then only accounts that match the VMWare email standards will be migrated, valid
+    values are 'TRUE'/'FALSE'"
+
+  AccountNameCheck:
+    Type: String
+    Default: FALSE
+    Description: "If set to true then only accounts that match the VMWare account name standards will be migrated,
+    valid values are 'TRUE'/'FALSE'"
+
+  SlackTopicName:
+    Type: String
+    Default: /Slack/OpsChannel
+    Description: SNS Topic ARN for sending Slack notifications
+
+  DefaultOUId:
+    Type: String
+    Default: ou-2z89-v1sr51hj
+    Description: "Accounts that joined VMWare organization successfully will be moved into this OU."
+
+  CreateSupportCase:
+    Type: String
+    Default: TRUE
+    Description: "If set to true then will create a support case to have the billing updated in the target account.
+    valid values are 'TRUE'/'FALSE'"
+
+Resources:
+  # IAM Roles
+  SpandrelEngineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: "S3Policy"
+          PolicyDocument:
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                  - "s3:ListObjects"
+                  - "s3:PutObject"
+                  - "s3:HeadObject"
+                Resource: !Sub "arn:aws:s3:::${SharedResourcesBucket}/*"
+
+        - PolicyName: "SNSTopicAccessPolicy"
+          PolicyDocument:
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "sns:Publish"
+                  - "sns:Subscribe"
+                Resource: "*"
+
+        - PolicyName: BasicLambdaAccessPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                  - "ssm:GetParameter"
+                  - "support:*"
+                  - "states:StartExecution"
+                Resource: "*"
+        - PolicyName: organizationAndIAMAccessPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "organizations:InviteAccountToOrganization"
+                  - "organizations:DescribeAccount"
+                  - "organizations:DeleteOrganization"
+                  - "organizations:AcceptHandshake"
+                  - "organizations:ListHandshakesForOrganization"
+                  - "organizations:LeaveOrganization"
+                  - "organizations:ListHandshakesForAccount"
+                  - "organizations:RemoveAccountFromOrganization"
+                  - "organizations:ListAccounts"
+                  - "organizations:DescribeOrganization"
+                  - "organizations:DescribeHandshake"
+                  - "organizations:MoveAccount"
+                  - "organizations:ListParents"
+                  - "iam:GetRole"
+                  - "iam:GetPolicy"
+                  - "iam:ListRoles"
+                  - "iam:CreateRole"
+                  - "iam:AttachRolePolicy"
+                  - "iam:PutRolePolicy"
+                  - "iam:CreatePolicy"
+                  - "iam:PutUserPolicy"
+                  - "iam:UpdateRole"
+                  - "iam:GetRolePolicy"
+                  - "iam:GetAccountSummary"
+                  - "sts:AssumeRole"
+                  - "access-analyzer:ListAnalyzers"
+                  - "access-analyzer:GetFinding"
+                  - "access-analyzer:GetAnalyzer"
+                  - "access-analyzer:ListFindings"
+                  - "access-analyzer:StartResourceScan"
+                  - "access-analyzer:CreateAnalyzer"
+                Resource: "*"
+
+        - PolicyName: DynamodbPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "dynamodb:BatchGet*"
+                  - "dynamodb:Get*"
+                  - "dynamodb:Query"
+                  - "dynamodb:Scan"
+                  - "dynamodb:BatchWrite*"
+                  - "dynamodb:Update*"
+                  - "dynamodb:PutItem"
+                  - "dynamodb:List*"
+                  - "dynamodb:Describe*"
+                Resource: !Sub "arn:aws:dynamodb:*:${MasterAccountId}:table/${AccountInfoTable}*"
+
+  # Step function Role
+  StepFunctionExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - !Sub states.${AWS::Region}.amazonaws.com
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: "StatesExecutionPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "lambda:InvokeFunction"
+                  - "states:StartExecution"
+                Resource: "*"
+  # SNS
+  Topic:
+    Type: AWS::SNS::Topic
+
+  # S3 bucket
+  SharedResourcesBucket:
+    Type: AWS::S3::Bucket
+
+  #Dynamodb
+  AccountInfoTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: "True"
+      AttributeDefinitions:
+        - AttributeName: "AccountId"
+          AttributeType: "S"
+        - AttributeName: "AccountType"
+          AttributeType: "S"
+        - AttributeName: "CompanyName"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "CompanyName"
+          KeyType: "HASH"
+        - AttributeName: "AccountId"
+          KeyType: "RANGE"
+      LocalSecondaryIndexes:
+        - IndexName: "AccountType"
+          KeySchema:
+            - AttributeName: "CompanyName"
+              KeyType: "HASH"
+            - AttributeName: "AccountType"
+              KeyType: "RANGE"
+          Projection:
+            ProjectionType: "ALL"
+      BillingMode: "PAY_PER_REQUEST"
+
+  #Dynamodb Report Table
+  FindingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: "True"
+      AttributeDefinitions:
+        - AttributeName: "resource"
+          AttributeType: "S"
+        - AttributeName: "resourceType"
+          AttributeType: "S"
+      #        - AttributeName: "CompanyName"
+      #          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "resource"
+          KeyType: "HASH"
+        - AttributeName: "resourceType"
+          KeyType: "RANGE"
+      #      LocalSecondaryIndexes:
+      #        - IndexName: "AccountType"
+      #          KeySchema:
+      #            - AttributeName: "CompanyName"
+      #              KeyType: "HASH"
+      #            - AttributeName: "AccountType"
+      #              KeyType: "RANGE"
+      #          Projection:
+      #            ProjectionType: "ALL"
+      BillingMode: "PAY_PER_REQUEST"
+
+  ReportEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "rate(7 days)"
+      State: "ENABLED"
+      Targets:
+        - Arn: !Sub ${GenerateReport.Arn}
+          Id: !Sub "${AWS::StackName}-ReportsTrigger"
+
+  # Lambda Layer
+  SpandrelEngineDependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: scratch/layers/
+      RetentionPolicy: Delete
+
+  # AE Report lambda
+  GenerateReport:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.reports.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 120
+      Role:  !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          LOG_LEVEL: !Sub ${LogLevel}
+          SHARED_RESOURCE_BUCKET: !Sub ${ SharedResourcesBucket}
+
+
+
+
+  #May be
+  CreateRolesMaster:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.create_master_roles.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 120
+      Role:  !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+          MASTER_ACCOUNT_ID: !Sub ${ MasterAccountId}
+          STS_EXTERNAL_ID: !Sub ${ StsExternalID}
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          LOG_LEVEL: !Sub ${ LogLevel}
+          CASE_CC_EMAIL_ADDRESSES: !Sub ${CaseCCEmailAddresses}
+          ACCOUNT_NAME_VALIDATION: !Sub ${AccountEmailCheck}
+          ACCOUNT_EMAIL_VALIDATION: !Sub ${ AccountNameCheck}
+
+  #required
+  ScanedResourceStatus:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.check_org_scan_status.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 120
+      Role:  !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+          MASTER_ACCOUNT_ID: !Sub ${ MasterAccountId}
+          FINDINGS_TABLE: !Sub ${ FindingsTable}
+          STS_EXTERNAL_ID: !Sub ${ StsExternalID}
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          LOG_LEVEL: !Sub ${ LogLevel}
+          CASE_CC_EMAIL_ADDRESSES: !Sub ${CaseCCEmailAddresses}
+          VMW_DEFAULT_OU_ID: !Sub ${ DefaultOUId}
+
+  ## may be
+  SupportCase:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.support_case.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 60
+      Role:  !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+          MASTER_ACCOUNT_ID: !Sub ${ MasterAccountId}
+          STS_EXTERNAL_ID: !Sub ${ StsExternalID}
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          LOG_LEVEL: !Sub ${ LogLevel}
+          CASE_CC_EMAIL_ADDRESSES: !Sub ${CaseCCEmailAddresses}
+          CREATE_SUPPORT_CASE: !Sub ${CreateSupportCase}
+
+
+
+  Cleanup:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.cleanup.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 120
+      Role:  !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+
+          STS_EXTERNAL_ID: !Sub ${ StsExternalID}
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          LOG_LEVEL: !Sub ${ LogLevel}
+          CASE_CC_EMAIL_ADDRESSES: !Sub ${CaseCCEmailAddresses}\
+
+
+
+  # Spandrel Lambdas
+  # maybe required
+  CreateRoles:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.create_roles.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 120
+      Role:  !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+          MASTER_ACCOUNT_ID: !Sub ${ MasterAccountId}
+          STS_EXTERNAL_ID: !Sub ${ StsExternalID}
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          LOG_LEVEL: !Sub ${ LogLevel}
+          CASE_CC_EMAIL_ADDRESSES: !Sub ${CaseCCEmailAddresses}
+          ACCOUNT_NAME_VALIDATION: !Sub ${AccountEmailCheck}
+          ACCOUNT_EMAIL_VALIDATION: !Sub ${ AccountNameCheck}
+
+
+  ## Required
+  CheckBillingAccess:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.check_billing_access.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 120
+      Role:  !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+          MASTER_ACCOUNT_ID: !Sub ${ MasterAccountId}
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          LOG_LEVEL: !Sub ${ LogLevel}
+
+
+
+
+
+
+    ## required
+  # Notification handler lambdas
+  NotificationLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.notification_observer.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 30
+      Role: !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+          MASTER_ACCOUNT_ID: !Sub ${ MasterAccountId}
+          STS_EXTERNAL_ID: !Sub ${ StsExternalID}
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          LOG_LEVEL: !Sub ${ LogLevel}
+          FINDINGS_TABLE: !Sub ${ FindingsTable}
+          CASE_CC_EMAIL_ADDRESSES: !Sub ${CaseCCEmailAddresses}
+          ACCOUNT_NAME_VALIDATION: !Sub ${AccountEmailCheck}
+          ACCOUNT_EMAIL_VALIDATION: !Sub ${ AccountNameCheck}
+          NOTIFICATION_OBSERVER_ARN: !Sub ${NotificationHandler}
+      Events:
+        SnsEvent:
+          Type: SNS
+          Properties:
+            Topic: !Sub ${Topic}
+
+  ## required
+  NotificationIdentifierLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.notification_identifier.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 30
+      Role: !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+          MASTER_ACCOUNT_ID: !Sub ${ MasterAccountId}
+          STS_EXTERNAL_ID: !Sub ${ StsExternalID}
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          LOG_LEVEL: !Sub ${ LogLevel}
+          FINDINGS_TABLE: !Sub ${ FindingsTable}
+          CASE_CC_EMAIL_ADDRESSES: !Sub ${CaseCCEmailAddresses}
+          ACCOUNT_NAME_VALIDATION: !Sub ${AccountEmailCheck}
+          ACCOUNT_EMAIL_VALIDATION: !Sub ${ AccountNameCheck}
+
+  ## required
+  NotificationHandlerLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.notification_handler.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 30
+      Role:  !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+          MASTER_ACCOUNT_ID: !Sub ${ MasterAccountId}
+          STS_EXTERNAL_ID: !Sub ${ StsExternalID}
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          LOG_LEVEL: !Sub ${ LogLevel}
+          FINDINGS_TABLE: !Sub ${ FindingsTable}
+          CASE_CC_EMAIL_ADDRESSES: !Sub ${CaseCCEmailAddresses}
+          ACCOUNT_NAME_VALIDATION: !Sub ${AccountEmailCheck}
+          ACCOUNT_EMAIL_VALIDATION: !Sub ${ AccountNameCheck}
+  ## required
+  NotifierLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.notifier.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 30
+      Role: !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+          MASTER_ACCOUNT_ID: !Sub ${ MasterAccountId}
+          STS_EXTERNAL_ID: !Sub ${ StsExternalID}
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          FINDINGS_TABLE: !Sub ${ FindingsTable}
+          LOG_LEVEL: !Sub ${ LogLevel}
+          CASE_CC_EMAIL_ADDRESSES: !Sub ${CaseCCEmailAddresses}
+          ACCOUNT_NAME_VALIDATION: !Sub ${AccountEmailCheck}
+          ACCOUNT_EMAIL_VALIDATION: !Sub ${ AccountNameCheck}
+
+  ## required
+  GetActiveRegionLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.active_regions_generator.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 120
+      Role:  !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+          MASTER_ACCOUNT_ID: !Sub ${ MasterAccountId}
+          STS_EXTERNAL_ID: !Sub ${ StsExternalID}
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          LOG_LEVEL: !Sub ${ LogLevel}
+          CASE_CC_EMAIL_ADDRESSES: !Sub ${CaseCCEmailAddresses}
+          VMW_DEFAULT_OU_ID: !Sub ${ DefaultOUId}
+  #required
+  ActivateAnalyzerLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.activate_analyzer.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 120
+      Role:  !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+          MASTER_ACCOUNT_ID: !Sub ${ MasterAccountId}
+          STS_EXTERNAL_ID: !Sub ${ StsExternalID}
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          LOG_LEVEL: !Sub ${ LogLevel}
+          CASE_CC_EMAIL_ADDRESSES: !Sub ${CaseCCEmailAddresses}
+          VMW_DEFAULT_OU_ID: !Sub ${ DefaultOUId}
+  #required
+  GetDependentResourcesLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: "spandrel_engine.get_org_dependent_resources.lambda_handler"
+      Runtime: "python3.7"
+      CodeUri: "./src"
+      Timeout: 120
+      Role:  !Sub ${SpandrelEngineRole.Arn}
+      Layers:
+        - !Sub ${SpandrelEngineDependenciesLayer}
+      Environment:
+        Variables:
+          MASTER_ACCOUNT_ID: !Sub ${ MasterAccountId}
+          STS_EXTERNAL_ID: !Sub ${ StsExternalID}
+          TARGET_ACCOUNT_TABLE_NAME: !Sub ${ AccountInfoTable}
+          NOTIFICATION_TOPIC: !Sub ${Topic}
+          SLACK_TOPIC: !Sub ${ SlackTopicName}
+          FINDINGS_TABLE: !Sub ${ FindingsTable}
+          LOG_LEVEL: !Sub ${ LogLevel}
+          CASE_CC_EMAIL_ADDRESSES: !Sub ${CaseCCEmailAddresses}
+          VMW_DEFAULT_OU_ID: !Sub ${ DefaultOUId}
+
+
+
+  # Notification Handler StepFunction
+  ## required
+  NotificationHandler:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "${AWS::StackName}-NotificationHandler"
+      RoleArn: !Sub ${StepFunctionExecutionRole.Arn}
+      DefinitionString: !Sub |
+        {
+           "Comment":"VMWare Spandrel engine Notification handler flow",
+           "StartAt":"NotificationIdentifier",
+           "States":{
+              "NotificationIdentifier":{
+                 "Type":"Task",
+                 "Resource":"${NotificationIdentifierLambda.Arn}",
+                 "Catch":[
+                    {
+                       "ErrorEquals":[
+                          "States.ALL"
+                       ],
+                       "Next":"Notifier"
+                    }
+                 ],
+                 "Next":"NotificationHandler"
+              },
+              "NotificationHandler":{
+                 "Type":"Task",
+                 "Resource":"${NotificationHandlerLambda.Arn}",
+                 "Catch":[
+                    {
+                       "ErrorEquals":[
+                          "States.ALL"
+                       ],
+                       "Next":"Notifier"
+                    }
+                 ],
+                 "Next":"Notifier"
+              },
+              "Notifier":{
+                 "Type":"Task",
+                 "Resource":"${NotifierLambda.Arn}",
+                 "End":true
+              }
+           }
+        }
+
+  # Dependent Resource Finder StepFunction
+  #required
+  DependentResourceFinder:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "${AWS::StackName}-DependentResourceFinder"
+      RoleArn: !Sub ${StepFunctionExecutionRole.Arn}
+      DefinitionString: !Sub |
+        {
+           "Comment":"VMWare Spandrel engine dependent resource finder",
+           "StartAt":"GetActiveRegions",
+           "States":{
+              "GetActiveRegions":{
+                 "Type":"Task",
+                 "Resource":"${GetActiveRegionLambda.Arn}",
+                 "Next":"ActivateAnalyzer"
+              },
+              "ActivateAnalyzer":{
+                 "Type":"Task",
+                 "Resource":"${ActivateAnalyzerLambda.Arn}",
+                 "Next":"WaitForAnalyzerScan"
+              },
+              "WaitForAnalyzerScan": {
+                "Type": "Wait",
+                "Seconds": 1800,
+                "Next": "ScanPolicies"
+              },
+              "ScanPolicies":{
+                 "Type":"Task",
+                 "Resource":"${GetDependentResourcesLambda.Arn}",
+                 "Next": "CheckScanPoliciesStatus"
+              },
+              "CheckScanPoliciesStatus":{
+              "Type":"Choice",
+              "Choices":[
+                {
+                    "Variable":"$.Status",
+                    "StringEquals":"Wait",
+                    "Next":"WaitToUpdatePolicies"
+                },
+                {
+                    "Variable":"$.Status",
+                    "StringEquals":"Completed",
+                    "Next":"FlowCompleted"
+                }
+              ]
+             },
+             "WaitToUpdatePolicies": {
+                "Type": "Wait",
+                "Seconds": ${WaitTime},
+                "Next": "ScanPolicies"
+             },
+             "FlowCompleted":{
+              "Type":"Pass",
+              "End":true
+             }
+           }
+        }
+Outputs:
+  SharedResourcesBucketName:
+    Value:
+      Fn::Sub: ${SharedResourcesBucket}

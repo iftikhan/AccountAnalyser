@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: Lambda and SNS topic used to send messages to Slack channels.
+Parameters:
+  DefaultWebHookEndpoint:
+    Type: String
+    Default: "https://hooks.slack.com/services/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"
+    Description: Webhook URL for the default channel in which messages will be sent to.
+
+  SnsTopicSsmParamName:
+    Type: String
+    Default: /Slack/OpsChannel
+    Description: Name for the SSM Parameter that stores the SNS Topic for Slack notification
+
+Resources:
+  SlackNotifierLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.lambda_handler
+      Runtime: python3.7
+      Timeout: 5
+      Policies:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Events:
+        SnsEvent:
+          Type: SNS
+          Properties:
+            Topic: !Sub ${SnsTopicForSlackNotifier}
+      Environment:
+        Variables:
+          WebhookUrl: !Sub ${DefaultWebHookEndpoint}
+      InlineCode: |
+        import datetime
+        import json
+        import os
+        import urllib3
+
+        def format_cloudwatch_alarm(sns_msg):
+            formatted_msg = {
+                'attachments': [
+                    {
+                        'fallback': '',
+                        'color': '#f44336',
+                        'author_name': 'CloudWatch Alarm',
+                        'title': f"{sns_msg['AlarmName']} in {sns_msg['Region']}",
+                        'text': f'```{json.dumps(sns_msg, indent=4)}```',
+                        'ts': datetime.datetime.now().timestamp()
+                    }
+                ]
+            }
+            return formatted_msg
+
+        def format_unknown_msg(sns_msg):
+            formatted_msg = {
+                'attachments': [
+                    {
+                        'fallback': '',
+                        'color': '#f44336',
+                        'author_name': 'SNS Notification',
+                        'title': f"Raw SNS Notification",
+                        'text': f'```{sns_msg}```',
+                        'ts': datetime.datetime.now().timestamp()
+                    }
+                ]
+            }
+            return formatted_msg
+
+        def lambda_handler(event, context):
+            slack_webhook_url = os.environ['WebhookUrl']
+            try:
+                sns_msg = json.loads(event['Records'][0]['Sns']['Message'])
+                if 'WebhookUrl' in sns_msg:
+                    slack_webhook_url = sns_msg['WebhookUrl']
+
+                if 'SlackMessage' in sns_msg:
+                    formatted_msg = sns_msg['SlackMessage']
+                elif 'AlarmName' in sns_msg:
+                    formatted_msg = format_cloudwatch_alarm(sns_msg)
+                else:
+                    formatted_msg = format_unknown_msg(sns_msg)
+
+            except json.decoder.JSONDecodeError:
+                sns_msg = event['Records'][0]['Sns']['Message']
+                formatted_msg = format_unknown_msg(sns_msg)
+
+            http = urllib3.PoolManager()
+            response = http.request(
+                'POST',
+                slack_webhook_url,
+                body=json.dumps(formatted_msg).encode('utf-8'),
+                headers={'Content-type': 'application/json'}
+            )
+            if not response.status == 200:
+                raise Exception(f'Error returned {response.status} with reason of {response.reason}')
+
+  SnsTopicForSlackNotifier:
+    Type: AWS::SNS::Topic
+
+  SlackNotifierSNSTopicParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${SnsTopicSsmParamName}
+      Type: String
+      Value: !Sub ${SnsTopicForSlackNotifier}
+      Description: Slack Notifier SNS Topic ARN

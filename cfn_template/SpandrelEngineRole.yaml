@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+  Creates IAM role used by the Assimilation Engine. This is the automation used
+  to integrate AWS accounts into VMware's AWS Org.
+Parameters:
+  MasterAccountId:
+    Type: String
+    Default: '632616529567'
+    Description: 'Master Account Id.'
+
+Resources:
+  SpandrelEngineRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: SpandrelEngineRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${MasterAccountId}:role/SpandrelEngineRole'
+            Action:
+              - 'sts:AssumeRole'
+      Path: "/"
+      Policies:
+        - PolicyName: BasicLambdaAccessPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'ssm:GetParameter'
+                Resource: '*'
+        - PolicyName: organizationAndIAMAccessPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'organizations:InviteAccountToOrganization'
+                  - 'organizations:DescribeAccount'
+                  - 'organizations:DeleteOrganization'
+                  - 'organizations:AcceptHandshake'
+                  - 'organizations:ListHandshakesForOrganization'
+                  - 'organizations:LeaveOrganization'
+                  - 'organizations:ListHandshakesForAccount'
+                  - 'organizations:RemoveAccountFromOrganization'
+                  - 'organizations:ListAccounts'
+                  - 'organizations:DescribeOrganization'
+                  - 'organizations:DescribeHandshake'
+                  - 'iam:GetRole'
+                  - 'iam:GetPolicy'
+                  - 'iam:ListRoles'
+                  - 'iam:CreateRole'
+                  - 'iam:AttachRolePolicy'
+                  - 'iam:PutRolePolicy'
+                  - 'iam:CreatePolicy'
+                  - 'iam:PutUserPolicy'
+                  - 'iam:UpdateRole'
+                  - 'iam:GetRolePolicy'
+                  - 'iam:GetAccountSummary'
+                  - 'sts:AssumeRole'
+                Resource: '*'
+
