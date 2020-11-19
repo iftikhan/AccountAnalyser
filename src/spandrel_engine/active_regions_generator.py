@@ -34,6 +34,7 @@ def lambda_handler(event, context):
     if type(event) is list:
         event = event[0]
     event = event['Data']
+    account_id = boto3.client('sts').get_caller_identity().get('Account')
 
-    event["Regions"] = get_enabled_regions(account_id=event['AccountId'])
+    event["Regions"] = get_enabled_regions(account_id=account_id)
     return event

@@ -14,7 +14,6 @@ from datetime import datetime
 
 from botocore.exceptions import ClientError
 
-from spandrel_engine.ae_logger import log_error
 from spandrel_engine.constant import Constant
 from spandrel_engine.lib.dynamodb import get_db, update_item
 from spandrel_engine.lib.notification import notify_msg
@@ -68,12 +67,9 @@ def lambda_handler(event, context):
                     account['AccountStatus'] = Constant.AccountStatus.SUSPENDED
                     update_item(Constant.DB_TABLE, account)
 
-                account['Error'] = log_error(logger=logger, account_id=account['AccountId'], company_name=account[
-                    'CompanyName'], error=ce, error_type=Constant.ErrorType.LOE, notify=True,
-                                             slack_handle=account['SlackHandle'])
+
             except Exception as ex:
-                log_error(logger=logger, account_id=event['AccountId'], company_name=event[
-                    'CompanyName'], error_type=Constant.ErrorType.LOE, notify=True, error=ex)
+
                 raise ex
     else:
         # check if all account get processed.

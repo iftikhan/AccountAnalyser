@@ -5,83 +5,11 @@ from time import sleep
 import boto3
 from botocore.exceptions import ClientError
 
-from spandrel_engine.ae_logger import log_error
 from spandrel_engine.constant import Constant
-from spandrel_engine.lib.dynamodb import get_db
 from spandrel_engine.lib.sessions import get_session
 
 logger = logging.getLogger(__name__)
 logger.setLevel(getattr(logging, Constant.LOG_LEVEL))
-
-
-# Note:
-# "CompanyName" and  "AccountId" Keys in account table
-# AccountType:  global Index on "CompanyName" and "AccountType"
-
-
-def get_master_account(table: str = Constant.DB_TABLE, company_name: str = None):
-    accounts = get_db(table).query(IndexName='AccountType',
-                                   KeyConditionExpression='CompanyName = :cn AND AccountType = :at',
-                                   ExpressionAttributeValues={
-                                       ':cn': company_name,
-                                       ':at': Constant.AccountType.MASTER
-                                   }).get('Items')
-
-    if accounts and len(accounts) > 1:
-        msg = f"System Error: Multiple master account found: {accounts}"
-        log_error(logger=logger, account_id=None, company_name=company_name,
-                  error_type=Constant.ErrorType.AIE, notify=True, msg=msg)
-        raise Exception(msg)
-
-    return accounts
-
-
-def get_accounts_by_type(table: str = Constant.DB_TABLE, company_name: str = None, account_type: str = None):
-    return get_db(table).query(IndexName='AccountType',
-                               KeyConditionExpression='CompanyName = :cn AND AccountType = :at',
-                               ExpressionAttributeValues={
-                                   ':cn': company_name,
-                                   ':at': account_type
-                               }).get('Items')
-
-
-def get_account_by_id(table: str = Constant.DB_TABLE, company_name: str = None, account_id: str = None):
-    return get_db(table).query(KeyConditionExpression='CompanyName = :cn AND AccountId = :at',
-                               ExpressionAttributeValues={
-                                   ':cn': company_name,
-                                   ':at': account_id
-                               }).get('Items')
-
-
-def get_accounts_by_status(table: str = Constant.DB_TABLE, company_name: str = None, account_type: str = None):
-    return get_db(table).query(KeyConditionExpression='CompanyName = :cn ',
-                               FilterExpression='AccountType = :a',
-                               ExpressionAttributeValues={
-                                   ':cn': company_name,
-                                   ':ma': account_type
-                               }).get('Items')
-
-
-def get_account_by_status_and_id(table: str = Constant.DB_TABLE, company_name: str = None,
-                                 account_status: str = None, account_id: str = None):
-    return get_db(table).query(KeyConditionExpression='CompanyName =:cn AND AccountId =:aid ',
-                               FilterExpression='AccountStatus =:as',
-                               ExpressionAttributeValues={
-                                   ':cn': company_name,
-                                   ':as': account_status,
-                                   ':aid': account_id
-                               }).get('Items')
-
-
-def get_accounts_by_company_name(table: str = Constant.DB_TABLE, company_name: str = None):
-    return get_db(table).query(KeyConditionExpression='CompanyName = :cn',
-                               ExpressionAttributeValues={
-                                   ':cn': company_name
-                               }).get("Items")
-
-
-def get_all_accounts(table: str = Constant.DB_TABLE):
-    return get_db(table).scan().get("Items")
 
 
 def get_org_id(session=None):

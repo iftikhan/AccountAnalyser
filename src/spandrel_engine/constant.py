@@ -27,28 +27,18 @@ def get_lambda_param(pram, is_ssm: bool = False, is_ssm_secured: bool = False):
 
 class Constant:
     # Lambda Parameters
-    MASTER_ACCOUNT_ID = get_lambda_param('MASTER_ACCOUNT_ID')
-    STS_EXTERNAL_ID = get_lambda_param('STS_EXTERNAL_ID')
-    NOTIFICATION_TOPIC = get_lambda_param('NOTIFICATION_TOPIC')
-    DB_TABLE = get_lambda_param('TARGET_ACCOUNT_TABLE_NAME')
-    FINDING_TABLE = get_lambda_param('FINDINGS_TABLE')
+
+    # DB_TABLE = get_lambda_param('TARGET_ACCOUNT_TABLE_NAME')
+    # FINDING_TABLE = get_lambda_param('FINDINGS_TABLE')
     LOG_LEVEL = get_lambda_param('LOG_LEVEL') or 'INFO'
-    CASE_CC_EMAIL_ADDRESSES = get_lambda_param('CASE_CC_EMAIL_ADDRESSES').split(',') if get_lambda_param(
-        'CASE_CC_EMAIL_ADDRESSES') else None
-    # NOTIFICATION_OBSERVER_ARN = get_lambda_param('NOTIFICATION_OBSERVER_ARN')
-    # SHARED_RESOURCE_BUCKET = get_lambda_param('SHARED_RESOURCE_BUCKET')
-    # CREATE_SUPPORT_CASE = get_lambda_param('CREATE_SUPPORT_CASE')
+    EMAIL_ADDRESSES = get_lambda_param('EMAIL_ADDRESSES').split(',') if get_lambda_param(
+        'EMAIL_ADDRESSES') else None
 
-    # Validation
-    # ACCOUNT_NAME_VALIDATION = get_lambda_param('ACCOUNT_NAME_VALIDATION')
-    # ACCOUNT_EMAIL_VALIDATION = get_lambda_param('ACCOUNT_EMAIL_VALIDATION')
+    WHITE_LISTED_ORGS = get_lambda_param('WHITE_LISTED_ORGS').split(',') if get_lambda_param(
+        'WHITE_LISTED_ORGS') else None
 
-    # Secure Sting SSM parameters
-    SLACK_TOPIC = get_lambda_param('SLACK_TOPIC', is_ssm=True)
-
-    # Patterns
-    ACCOUNT_NAME_PATTERN = r'^([a-z]{2})(\d{7})\s{1}\w+\s{1}\w+$'
-    EMAIL_PATTERN = r'^\S+@vmware.com$'
+    WHITE_LISTED_ACCOUNTS = get_lambda_param('WHITE_LISTED_ACCOUNTS').split(',') if get_lambda_param(
+        'WHITE_LISTED_ACCOUNTS') else None
 
     # Lambda Status
     FAILED = 0
@@ -59,7 +49,7 @@ class Constant:
     TRUE = 'TRUE'
 
     # Slack
-    AUTHOR_NAME = 'Assimilation Engine'
+    AUTHOR_NAME = 'Spandrel Engine'
     AUTHOR_ICON = 'https://i.ibb.co/R3Bs1BS/AE.png'
 
     # Error Type
@@ -100,44 +90,6 @@ class Constant:
         ROOT = 'ROOT'
         OU = 'ORGANIZATIONAL_UNIT'
 
-    # Role policy
-    ROLE_CONFIG = {
-        'VMWMasterRole': {
-            'TrustPolicy': {
-                'Version': '2012-10-17',
-                'Statement': [
-                    {
-                        'Effect': 'Allow',
-                        'Principal': {
-                            'AWS': MASTER_ACCOUNT_ID
-                        },
-                        'Action': [
-                            'sts:AssumeRole'
-                        ]
-                    }
-                ]
-            },
-            'Policy': 'arn:aws:iam::aws:policy/AdministratorAccess'
-        },
-        'VMWMasterReadOnlyRole': {
-            'TrustPolicy': {
-                'Version': '2012-10-17',
-                'Statement': [
-                    {
-                        'Effect': 'Allow',
-                        'Principal': {
-                            'AWS': MASTER_ACCOUNT_ID
-                        },
-                        'Action': [
-                            'sts:AssumeRole'
-                        ]
-                    }
-                ]
-            },
-            'Policy': 'arn:aws:iam::aws:policy/ReadOnlyAccess'
-        }
-    }
-
     class AccountStatus:
         INVITED = 1  # Account has left the current organization and ready to accept invitation.
         JOINED = 2  # Account has joined new organization.
@@ -151,10 +103,6 @@ class Constant:
         LINKED = 'Linked'
         MASTER = 'Master'
         STANDALONE = 'Standalone'
-
-    @staticmethod
-    def get_support_case_subject(account_id):
-        return f'Please update this payer account i.e. {account_id} and all linked accounts payment method'
 
     @staticmethod
     def get_support_case_desc(account_id):

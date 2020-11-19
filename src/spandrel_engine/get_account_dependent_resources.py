@@ -5,17 +5,17 @@ import boto3
 from botocore.exceptions import ClientError
 
 from spandrel_engine.constant import Constant
-from spandrel_engine.lib.dynamodb import update_item, batch_write
+from spandrel_engine.lib.dynamodb import update_item
 from spandrel_engine.lib.sessions import get_session
 from spandrel_engine.reports import generate_report
-from spandrel_engine.util import get_account_by_id, get_org_id
+from spandrel_engine.util import get_org_id
 
 logger = logging.getLogger(__name__)
 logger.setLevel(getattr(logging, Constant.LOG_LEVEL))
 report = []
 
 
-def get_org_level_resources(region: str, account: dict, session, report) -> dict:
+def get_account_level_resources(region: str, account: dict, session, report) -> dict:
     status = Constant.StateMachineStates.COMPLETED
 
     analyzer_client = session.client('accessanalyzer', region_name=region)
@@ -45,11 +45,11 @@ def lambda_handler(event, context):
     status = set({})
 
     account_id = event["AccountId"]
-    company_name = event['CompanyName']
-    account = None
+    # company_name = event['CompanyName']
+    account = event
 
     try:
-        account = get_account_by_id(company_name=company_name, account_id=account_id)[0]
+        # account = get_account_by_id(company_name=company_name, account_id=account_id)[0]
         session = None
         if Constant.MASTER_ACCOUNT_ID != account_id:
             session = get_session(f"arn:aws:iam::{account_id}:role/{Constant.MASTER_ROLE}")
@@ -60,7 +60,7 @@ def lambda_handler(event, context):
         target_org_id = get_org_id()
 
         for region in event["Regions"]:
-            get_org_level_resources(region, account, session, target_org_id, current_org_id, report)
+            get_account_level_resources()(region, account, session, report)
 
         status = update_findings(report, account)
 
@@ -107,7 +107,7 @@ def update_findings(findings_data, account):
             if finding["principal"]["AWS"] in white_listed_orgs:
                 finding["WhiteListed"]
 
-    batch_write(Constant.FINDING_TABLE, findings)
+    # batch_write(Constant.FINDING_TABLE, findings)
 
     generate_report(findings)
     return False
